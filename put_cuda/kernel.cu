@@ -1,5 +1,7 @@
 #include "kernel.h"
 
+#include <memory>
+
 __global__ void multiplyKernet(float *a, float *b, float *c, int size)
 {
 	extern __shared__ float t_c[];
@@ -16,83 +18,94 @@ __global__ void multiplyKernet(float *a, float *b, float *c, int size)
 }
 
 
-int cudaCopy(float *dest, float *src, size_t size, cudaMemcpyKind copyKind)
+cudaError_t cudaCopy(float *dest, float *src, size_t size, cudaMemcpyKind copyKind)
 {
 	cudaError_t cudaStatus = cudaMemcpy(dest, src, size, copyKind);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed: %s", cudaGetErrorString(cudaStatus));
-		return -1;
 	}
-	return 0;
+	return cudaStatus;
 }
 
-int cudaAllocate(void **devPtr, size_t size)
+cudaError_t cudaAllocate(void **devPtr, size_t size)
 {
 	cudaError_t cudaStatus = cudaMalloc(devPtr, size);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed: %s", cudaGetErrorString(cudaStatus));
-		return -1;
 	}
-	return 0;
+
+	return cudaStatus;
 }
 
-int cudaCall(cudaError_t(*cudaFunc)(), char *msg)
+cudaError_t cudaCall(cudaError_t(*cudaFunc)(), const char *msg)
 {
 	cudaError_t cudaStatus = cudaFunc();
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "%s: %s\n", msg, cudaGetErrorString(cudaStatus));
-		return -1;
 	}
-	return 0;
+	return cudaStatus;
 }
 
-int cudaStartTimer(cudaEvent_t *start, cudaEvent_t *stop)
+cudaError_t cudaStartTimer(cudaEvent_t *start, cudaEvent_t *stop)
 {
 	cudaError_t cudaStatus = cudaEventCreate(start);
 	if (cudaStatus != cudaSuccess)
 	{
 		fprintf(stderr, "cudaCEventCreate(start) failed (errorCode: %s)!\n", cudaGetErrorString(cudaStatus));
-		return -1;
+		return cudaStatus;
 	}
 	cudaStatus = cudaEventCreate(stop);
 	if (cudaStatus != cudaSuccess)
 	{
 		fprintf(stderr, "cudaEventCreate(stop) failed (errorCode: %s)!\n", cudaGetErrorString(cudaStatus));
-		return -1;
+		return cudaStatus;
 	}
 	cudaStatus = cudaEventRecord(*start, 0);
 	if (cudaStatus != cudaSuccess)
 	{
 		fprintf(stderr, "cudaEventRecord(start) failed (errorCode: %s)!\n", cudaGetErrorString(cudaStatus));
-		return -1;
+		return cudaStatus;
 	}
-	return 0;
+	return cudaSuccess;
 }
 
-int cudaStopTimer(cudaEvent_t *start, cudaEvent_t *stop, float *msecTotal)
+cudaError_t cudaStopTimer(cudaEvent_t *start, cudaEvent_t *stop, float & msecTotal)
 {
 	cudaError_t cudaStatus = cudaEventRecord(*stop, 0);
 	if (cudaStatus != cudaSuccess)
 	{
 		fprintf(stderr, "cudaEventRecord(stop) failed !\n");
-		return -1;
+		return cudaStatus;
 	}
 	cudaStatus = cudaEventSynchronize(*stop);
 	if (cudaStatus != cudaSuccess)
 	{
 		fprintf(stderr, "cudaEventSynchronize failed !\n");
-		return -1;
+		return cudaStatus;
 	}
-	*msecTotal = 0.0f;
-	cudaStatus = cudaEventElapsedTime(msecTotal, *start, *stop);
+	msecTotal = 0.0f;
+	cudaStatus = cudaEventElapsedTime(&msecTotal, *start, *stop);
 	if (cudaStatus != cudaSuccess)
 	{
 		fprintf(stderr, "cudaEventElapsedTime failed !\n");
-		return -1;
+		return cudaStatus;
 	}
-	cudaEventDestroy(*start);
-	cudaEventDestroy(*stop);
-	return 0;
+
+	cudaStatus = cudaEventDestroy(*start);
+	if (cudaStatus != cudaSuccess)
+	{
+		fprintf(stderr, "cudaEventDestroy failed !\n");
+		return cudaStatus;
+	}
+
+	cudaStatus = cudaEventDestroy(*stop);
+	if (cudaStatus != cudaSuccess)
+	{
+		fprintf(stderr, "cudaEventDestroy failed !\n");
+		return cudaStatus;
+	}
+
+	return cudaSuccess;
 }
 
 int main()
@@ -113,7 +126,7 @@ int main()
 	
     // Add vectors in parallel.
 
-	cudaError_t cudaStatus = multiplyMatrix((float*)a, (float*)b, (float*)c, SIZE, &msecTotal);
+	cudaError_t cudaStatus = multiplyMatrix((float*)a, (float*)b, (float*)c, SIZE, msecTotal);
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "multiplyMatrix failed!");
         return 1;
@@ -134,45 +147,54 @@ int main()
     return 0;
 }
 
-cudaError_t multiplyMatrix(float *a, float *b, float *c, const int size, float *msecTotal)
+#define CUDA_CHECK(FUN)				\
+{									\
+	cudaError_t status;				\
+	status = FUN;					\
+	if (status != cudaSuccess)		\
+		return status;				\
+}
+		
+
+cudaError_t multiplyMatrix(float *a, float *b, float *c, const int size, float & msecTotal)
 {
-	float *dev_a;
-	float *dev_b;
-	float *dev_c;
+	const size_t totalSize = size * size * sizeof(float);
+
+	auto cudaMemoryDeleter = [&](float* ptr) { cudaFree(ptr); };
+	
+	std::shared_ptr<float> dev_a(new float(), cudaMemoryDeleter);
+	std::shared_ptr<float> dev_b(new float(), cudaMemoryDeleter);
+	std::shared_ptr<float> dev_c(new float(), cudaMemoryDeleter);
+
 	cudaError_t cudaStatus;
 
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-		goto Error;
+		return cudaStatus;
 	}
 
-	if (0 > cudaAllocate((void**)&dev_a, size*size * sizeof(float))) goto Error;
-	if (0 > cudaAllocate((void**)&dev_b, size*size * sizeof(float))) goto Error;
-	if (0 > cudaAllocate((void**)&dev_c, size*size * sizeof(float))) goto Error;
+	CUDA_CHECK(cudaAllocate((void**)&dev_a, totalSize));
+	CUDA_CHECK(cudaAllocate((void**)&dev_b, totalSize));
+	CUDA_CHECK(cudaAllocate((void**)&dev_c, totalSize));
 
-	if (0 > cudaCopy(dev_a, a, size*size * sizeof(float), cudaMemcpyHostToDevice)) goto Error;
-	if (0 > cudaCopy(dev_b, b, size*size * sizeof(float), cudaMemcpyHostToDevice)) goto Error;
-		
+	CUDA_CHECK(cudaCopy(dev_a.get(), a, totalSize, cudaMemcpyHostToDevice));
+	CUDA_CHECK(cudaCopy(dev_b.get(), b, totalSize, cudaMemcpyHostToDevice));
+
 	dim3 blockDim(size, size);
 	cudaEvent_t start, stop;
 
-	if(0 > cudaStartTimer(&start, &stop)) goto Error;
+	CUDA_CHECK(cudaStartTimer(&start, &stop));
 
-	multiplyKernet <<<1, blockDim, size*size >>> (dev_a, dev_b, dev_c, size);
+	multiplyKernet <<< 1, blockDim, size*size >>> (dev_a.get(), dev_b.get(), dev_c.get(), size);
 
-	if(0 > cudaStopTimer(&start, &stop, msecTotal)) goto Error;
+	CUDA_CHECK(cudaStopTimer(&start, &stop, msecTotal));
+
+	CUDA_CHECK(cudaCall(cudaGetLastError, "addKernet lauch failed"));
+	CUDA_CHECK(cudaCall(cudaDeviceSynchronize, "cudaDeviceSynchronize returned error code"));
+	CUDA_CHECK(cudaCopy(c, dev_c.get(), totalSize, cudaMemcpyDeviceToHost));
 	
-	if (0 > cudaCall(cudaGetLastError, "addKernet lauch failed") ) goto Error;
-	if (0 > cudaCall(cudaDeviceSynchronize, "cudaDeviceSynchronize returned error code")) goto Error;
-	if (0 > cudaCopy(c, dev_c, size * size * sizeof(float), cudaMemcpyDeviceToHost)) goto Error;
-	//	fprintf(stderr, "cudaDeviceSynchronize returned error code %d after launching multiplyKernet!\n", cudaStatus);
-
-Error:
-	cudaFree(dev_a);
-	cudaFree(dev_b);
-	cudaFree(dev_c);
-	return cudaStatus;
+	return cudaSuccess;
 }
 
 void printMatrix(float *arr, const int size)
