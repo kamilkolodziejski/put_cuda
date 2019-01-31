@@ -2,18 +2,22 @@
 
 #include <memory>
 
-__global__ void multiplyKernet(float *a, float *b, float *c, int size)
+__global__ void multiplyKernet(float *a, float *b, float *c)
 {
-	extern __shared__ float t_c[];
-	int i = threadIdx.x;
-	int j = threadIdx.y;
+	extern __shared__ float shared_a[SIZE*SIZE];
+	extern __shared__ float shared_b[SIZE*SIZE];
+
+	int tx = threadIdx.x;
+	int ty = threadIdx.y;
+	shared_a[tx*SIZE + ty] = a[tx*SIZE + ty];
+	shared_b[tx*SIZE + ty] = b[tx*SIZE + ty];
 	float loc_c = 0.0;
 	__syncthreads();
-	for (int k = 0; k < size; ++k)
+	for (int k = 0; k < SIZE; ++k)
 	{
-		loc_c += a[i*k+j] * b[j*k+i];
+		loc_c += shared_a[tx*k+ty] * shared_b[ty*k+tx];
 	}
-	c[i*size + j] = loc_c;
+	c[tx*SIZE + ty] = loc_c;
 	__syncthreads();
 }
 
@@ -138,11 +142,6 @@ int main()
 	printf("\nTotal miliseconds: %.5f\n", msecTotal);
 
 	if (0 < cudaCall(cudaDeviceReset, "cudaDeviceReset failed!")) return 1;
-    //cudaStatus = cudaDeviceReset();
-    //if (cudaStatus != cudaSuccess) {
-    //    fprintf(stderr, "cudaDeviceReset failed!");
-    //    return 1;
-    //}
 
     return 0;
 }
@@ -186,7 +185,7 @@ cudaError_t multiplyMatrix(float *a, float *b, float *c, const int size, float &
 
 	CUDA_CHECK(cudaStartTimer(&start, &stop));
 
-	multiplyKernet <<< 1, blockDim, size*size >>> (dev_a.get(), dev_b.get(), dev_c.get(), size);
+	multiplyKernet <<< 1, blockDim, size*size >>> (dev_a.get(), dev_b.get(), dev_c.get());
 
 	CUDA_CHECK(cudaStopTimer(&start, &stop, msecTotal));
 
