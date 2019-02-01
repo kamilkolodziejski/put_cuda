@@ -18,7 +18,8 @@ cudaError_t cudaStopTimer(cudaEvent_t *start, cudaEvent_t *stop, float & msecTot
 
 void printMatrix(float *arr, const int arrSize);
 
-const int SIZE = 5;
+const int SIZE = 4;
+const int SUB_SIZE = 2;
 
 #endif // !KERNEL_H
 

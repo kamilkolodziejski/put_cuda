@@ -4,21 +4,25 @@
 
 __global__ void multiplyKernet(float *a, float *b, float *c)
 {
-	extern __shared__ float shared_a[SIZE*SIZE];
-	extern __shared__ float shared_b[SIZE*SIZE];
+	extern __shared__ float shared_a[SUB_SIZE*SUB_SIZE];
+	extern __shared__ float shared_b[SUB_SIZE*SUB_SIZE];
 
 	int tx = threadIdx.x;
 	int ty = threadIdx.y;
-	shared_a[tx*SIZE + ty] = a[tx*SIZE + ty];
-	shared_b[tx*SIZE + ty] = b[tx*SIZE + ty];
+	int col = blockIdx.x * blockDim.x + threadIdx.x;
+	int row = blockIdx.y * blockDim.y + threadIdx.y;
 	float loc_c = 0.0;
-	__syncthreads();
-	for (int k = 0; k < SIZE; ++k)
+
+	for (int m = 0; m < SIZE / SUB_SIZE; ++m)
 	{
-		loc_c += shared_a[tx*k+ty] * shared_b[ty*k+tx];
+		shared_a[(ty * SUB_SIZE) + tx] = a[(row*SIZE) + (m*SUB_SIZE + tx)];
+		shared_b[(ty * SUB_SIZE) + tx] = b[(m*SUB_SIZE + ty) * SIZE + col];
+		__syncthreads();
+		for (int k = 0; k < SUB_SIZE; ++k)
+			loc_c += shared_a[ty * SUB_SIZE + k] * shared_b[k * SUB_SIZE + tx];
+		__syncthreads();
 	}
-	c[tx*SIZE + ty] = loc_c;
-	__syncthreads();
+	c[row*SIZE + col] = loc_c;
 }
 
 
@@ -120,8 +124,8 @@ int main()
 	float msecTotal = 0.0f;
 	for (int i = 0; i < SIZE*SIZE; ++i)
 	{
-		a[i] = 1.0;// (float)rand() / RAND_MAX;;
-		b[i] = 2.0;// (float)rand() / RAND_MAX;;
+		a[i] = i+1;// (float)rand() / RAND_MAX;;
+		b[i] = (i+1)*2;// (float)rand() / RAND_MAX;;
 	}
 
 	printMatrix(a, SIZE);
@@ -180,12 +184,14 @@ cudaError_t multiplyMatrix(float *a, float *b, float *c, const int size, float &
 	CUDA_CHECK(cudaCopy(dev_a.get(), a, totalSize, cudaMemcpyHostToDevice));
 	CUDA_CHECK(cudaCopy(dev_b.get(), b, totalSize, cudaMemcpyHostToDevice));
 
-	dim3 blockDim(size, size);
+	dim3 gridDim(SUB_SIZE, SUB_SIZE);
+	dim3 blockDim(SIZE / SUB_SIZE, SIZE / SUB_SIZE);
+
 	cudaEvent_t start, stop;
 
 	CUDA_CHECK(cudaStartTimer(&start, &stop));
 
-	multiplyKernet <<< 1, blockDim, size*size >>> (dev_a.get(), dev_b.get(), dev_c.get());
+	multiplyKernet <<< gridDim, blockDim>>> (dev_a.get(), dev_b.get(), dev_c.get());
 
 	CUDA_CHECK(cudaStopTimer(&start, &stop, msecTotal));
 
