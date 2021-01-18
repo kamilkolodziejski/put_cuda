@@ -1,2 +1,2 @@
 # cuda
-Parallel Programming on PUT - some CUDA project
+Parallel Programming at PUT - some CUDA project
